@@ -1,4 +1,4 @@
-# scrape_airbnb.py
+# scrape_airbnb.py - VERSION CORRIGÉE
 import os, csv, re, time, datetime
 from urllib.parse import urljoin
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
@@ -43,24 +43,25 @@ def get_text_safe(loc, timeout=2500):
 # ---------------- navigation ----------------
 
 def goto_search_with_retry(page):
-    # Préfère le domaine fr pour limiter redirections.
-    candidates = []
-    if "fr.airbnb.com" in START_URL:
-        candidates = [START_URL, START_URL.replace("fr.airbnb.com","www.airbnb.com")]
-    else:
-        candidates = [START_URL.replace("www.airbnb.com","fr.airbnb.com"), START_URL]
-
+    """
+    CORRECTION: Gère maintenant tous les domaines Airbnb (com, fr, ca, etc.)
+    """
+    # Utilise directement l'URL fournie sans essayer de la modifier
+    candidates = [START_URL]
+    
     last_err = None
     for url in candidates:
         for _ in range(2):
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                # cookies
+                # Gestion des cookies
                 click_if_present(page, 'button:has-text("Accepter")', 4000) or \
                 click_if_present(page, 'button:has-text("I agree")', 4000) or \
-                click_if_present(page, 'button:has-text("OK")', 4000)
-                # attend qu’au moins une carte soit chargée
+                click_if_present(page, 'button:has-text("OK")', 4000) or \
+                click_if_present(page, 'button:has-text("Accept")', 4000)
+                # Attend qu'au moins une carte soit chargée
                 page.wait_for_selector('a[href^="/rooms/"]', timeout=30000)
+                print(f"✓ Navigation réussie vers {url[:80]}...")
                 return
             except Exception as e:
                 last_err = e
@@ -149,33 +150,94 @@ def extract_license_code(page):
             return m.group(0)
     return ""
 
-# ---------------- HOST (depuis bloc “Faites connaissance…”) ----------------
+# ---------------- HOST (VERSION AMÉLIORÉE) ----------------
 
 def find_host_section(page):
+    """
+    CORRECTION: Liste étendue de sélecteurs pour trouver le bloc hôte
+    """
     candidates = [
+        # Français
         'section:has(h2:has-text("Faites connaissance avec votre hôte"))',
+        'section:has(h2:has-text("Rencontrez votre hôte"))',
+        'section:has(h3:has-text("Faites connaissance"))',
+        'div:has(h2:has-text("Faites connaissance"))',
+        # Anglais
         'section:has(h2:has-text("Meet your Host"))',
         'section:has(h2:has-text("Get to know your host"))',
+        'section:has(h3:has-text("Meet your Host"))',
+        'div:has(h2:has-text("Meet your Host"))',
+        # Espagnol
         'section:has(h2:has-text("Conoce a tu anfitri"))',
+        # Allemand
         'section:has(h2:has-text("Erfahre mehr über deinen Gastgeber"))',
+        # Sélecteurs génériques
+        'section:has(a[href^="/users/show/"])',
+        'div[data-section-id*="HOST"]',
+        'div[data-plugin-in-point-id*="HOST"]',
     ]
+    
     for sel in candidates:
-        loc = page.locator(sel)
         try:
-            if loc.count() and loc.first.is_visible():
-                return loc.first
+            loc = page.locator(sel).first
+            if loc.count() and loc.is_visible():
+                print(f"✓ Bloc hôte trouvé avec: {sel[:60]}...")
+                return loc
         except Exception:
             continue
+    
+    print("⚠ Bloc hôte spécifique non trouvé, utilisation de la page entière...")
     return None
 
-def extract_host_fields(page, listing_url):
-    host_name = host_overall_rating = host_profile_url = host_joined = ""
-    # scroll vers le bas pour charger le bloc hôte
-    for _ in range(6):
-        page.mouse.wheel(0, 1400)
-        page.wait_for_timeout(250)
+def extract_host_url_fallback(page, listing_url):
+    """
+    NOUVEAU: Méthode de secours pour extraire l'URL du profil hôte
+    Cherche dans TOUTE la page si le bloc dédié n'est pas trouvé
+    """
+    try:
+        # Chercher TOUS les liens /users/show/ dans la page
+        all_links = page.locator('a[href*="/users/show/"]').all()
+        
+        if not all_links:
+            print("⚠ Aucun lien /users/show/ trouvé dans la page")
+            return ""
+        
+        # Prendre le premier lien valide
+        for link in all_links:
+            try:
+                href = link.get_attribute("href")
+                if href and "/users/show/" in href:
+                    full_url = urljoin(listing_url, href.split("?")[0])
+                    print(f"✓ URL hôte trouvée (fallback): {full_url}")
+                    return full_url
+            except Exception:
+                continue
+        
+        print("⚠ Liens /users/show/ trouvés mais aucun valide")
+        return ""
+        
+    except Exception as e:
+        print(f"⚠ Erreur extraction URL hôte (fallback): {e}")
+        return ""
 
+def extract_host_fields(page, listing_url):
+    """
+    CORRECTION: Amélioration avec méthode de fallback
+    """
+    host_name = host_overall_rating = host_profile_url = host_joined = ""
+    
+    # Scroll vers le bas pour charger le bloc hôte
+    try:
+        for _ in range(6):
+            page.mouse.wheel(0, 1400)
+            page.wait_for_timeout(250)
+    except Exception:
+        pass
+
+    # Chercher le bloc hôte
     sect = find_host_section(page)
+    
+    # Si le bloc n'est pas trouvé, scroll encore plus
     if not sect:
         try:
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -183,9 +245,34 @@ def extract_host_fields(page, listing_url):
         except Exception:
             pass
         sect = find_host_section(page)
+    
+    # NOUVEAU: Si toujours pas trouvé, utiliser la méthode de fallback
     if not sect:
+        print("→ Utilisation de la méthode de fallback pour l'URL hôte...")
+        host_profile_url = extract_host_url_fallback(page, listing_url)
+        
+        # Si on a trouvé l'URL avec le fallback, essayer d'extraire le nom
+        if host_profile_url:
+            try:
+                # Chercher le nom n'importe où dans la page
+                body_text = page.locator("body").inner_text(timeout=3000)
+                
+                # Extraire le rating si possible
+                m = re.search(r"(\d+(?:[.,]\d+)?)\s*[★*]", body_text)
+                if m:
+                    host_overall_rating = m.group(1).replace(",", ".")
+                
+                # Extraire l'année si possible
+                m2 = re.search(r"(depuis|since)\s+(?:\w+\s+)?(\d{4})", body_text, re.I)
+                if m2:
+                    host_joined = m2.group(2)
+                    
+            except Exception as e:
+                print(f"⚠ Erreur extraction données hôte: {e}")
+        
         return host_name, host_overall_rating, host_profile_url, host_joined
 
+    # Si le bloc est trouvé, continuer normalement
     # URL du profil hôte (dans le bloc hôte uniquement)
     try:
         link = sect.locator('a[href^="/users/show/"]').first
@@ -193,42 +280,51 @@ def extract_host_fields(page, listing_url):
             href = link.get_attribute("href")
             if href:
                 host_profile_url = urljoin(listing_url, href.split("?")[0])
-    except Exception:
+                print(f"✓ URL hôte trouvée (bloc): {host_profile_url}")
+    except Exception as e:
+        print(f"⚠ Erreur extraction URL hôte: {e}")
         link = None
 
-    # Nom de l’hôte
+    # Nom de l'hôte
     try:
         text = link.inner_text().strip() if link and link.count() else ""
         if not text:
             text = sect.locator('a[href^="/users/show/"]').first.inner_text().strip()
         if text and len(text) < 60:
             host_name = text
+            print(f"✓ Nom hôte: {host_name}")
     except Exception:
         pass
 
-    # Texte brut du bloc pour rating + année d’inscription
+    # Texte brut du bloc pour rating + année d'inscription
     try:
         block = sect.inner_text(timeout=3000)
     except Exception:
         block = ""
 
-    # Note globale de l’hôte
+    # Note globale de l'hôte
     m = re.search(r"(\d+(?:[.,]\d+)?)\s*[★*]", block) \
         or re.search(r"Note globale\s*:?[\s\n]*([0-9]+(?:[.,][0-9]+)?)", block, re.I) \
         or re.search(r"(\d+(?:[.,]\d+)?)\s*[•·]\s*(?:avis|reviews)", block, re.I)
     if m:
         host_overall_rating = m.group(1).replace(",", ".")
+        print(f"✓ Rating hôte: {host_overall_rating}")
 
     # Année/mois depuis quand sur Airbnb
     m2 = re.search(r"(depuis|since)\s+(?:\w+\s+)?(\d{4})", block, re.I)
     if m2:
         host_joined = m2.group(2)
+        print(f"✓ Année inscription: {host_joined}")
 
     return host_name, host_overall_rating, host_profile_url, host_joined
 
 # ---------------- parsing PDP ----------------
 
 def parse_listing(page, url):
+    print(f"\n{'='*60}")
+    print(f"Scraping: {url}")
+    print(f"{'='*60}")
+    
     data = {
         "url": url, "title": "", "license_code": "",
         "host_name": "", "host_overall_rating": "",
@@ -238,22 +334,39 @@ def parse_listing(page, url):
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(600)
 
-        title = (
-            page.locator('meta[property="og:title"]').first.get_attribute("content") or
-            get_text_safe(page.locator('h1[data-testid="title"]')) or
-            get_text_safe(page.locator("h1"))
-        )
+        # Titre
+        title = ""
+        try:
+            title = page.locator('meta[property="og:title"]').first.get_attribute("content")
+        except:
+            pass
+        if not title:
+            title = get_text_safe(page.locator('h1[data-testid="title"]')) or get_text_safe(page.locator("h1"))
+        
         data["title"] = title
+        if title:
+            print(f"✓ Titre: {title[:60]}...")
 
-        # Host via bloc dédié
+        # Host via fonction améliorée
         hn, hr, hp, hj = extract_host_fields(page, url)
         data.update({"host_name": hn, "host_profile_url": hp, "host_overall_rating": hr, "host_joined": hj})
 
-        # Licence via méthode inchangée
+        # Licence
         data["license_code"] = extract_license_code(page)
+        if data["license_code"]:
+            print(f"✓ Licence: {data['license_code']}")
+
+        # Résumé
+        print(f"\n📊 Résumé pour cette annonce:")
+        print(f"   • URL hôte: {'✓' if hp else '✗'} {hp[:50] if hp else 'NON TROUVÉE'}")
+        print(f"   • Nom hôte: {'✓' if hn else '✗'} {hn if hn else 'NON TROUVÉ'}")
+        print(f"   • Rating: {'✓' if hr else '✗'} {hr if hr else 'NON TROUVÉ'}")
+        print(f"   • Année: {'✓' if hj else '✗'} {hj if hj else 'NON TROUVÉE'}")
+        print(f"   • Licence: {'✓' if data['license_code'] else '✗'} {data['license_code'] if data['license_code'] else 'NON TROUVÉE'}")
 
     except Exception as e:
-        print(f"ERROR parsing {url}: {e}")
+        print(f"❌ ERROR parsing {url}: {e}")
+    
     return data
 
 # ---------------- main ----------------
@@ -279,7 +392,9 @@ def main():
             rows.append(parse_listing(page, u))
 
         write_csv(rows)
-        print(f"SAVED {len(rows)} rows to {OUT_CSV}")
+        print(f"\n{'='*60}")
+        print(f"✅ SAVED {len(rows)} rows to {OUT_CSV}")
+        print(f"{'='*60}")
 
         context.close()
         browser.close()
