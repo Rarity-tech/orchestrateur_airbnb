@@ -1,0 +1,20 @@
+# search_urls.txt
+# Listez ici les URLs des pages de recherche Airbnb à scraper
+# Une URL par ligne
+# Les lignes commençant par # sont ignorées
+
+# Exemple pour Dubai - Page 1 à 8
+https://www.airbnb.com/s/Dubai/homes
+https://www.airbnb.com/s/Dubai/homes?items_offset=18
+https://www.airbnb.com/s/Dubai/homes?items_offset=36
+https://www.airbnb.com/s/Dubai/homes?items_offset=54
+https://www.airbnb.com/s/Dubai/homes?items_offset=72
+https://www.airbnb.com/s/Dubai/homes?items_offset=90
+https://www.airbnb.com/s/Dubai/homes?items_offset=108
+https://www.airbnb.com/s/Dubai/homes?items_offset=126
+
+# NOTES:
+# - Vous pouvez aussi utiliser la pagination avec &page=2, &page=3, etc.
+# - Assurez-vous que les URLs sont correctes en les testant dans votre navigateur
+# - Chaque page contient environ 18 annonces
+# - Le workflow traitera les pages dans l'ordre
