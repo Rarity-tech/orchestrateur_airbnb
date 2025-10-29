@@ -1,0 +1,226 @@
+name: Orchestrateur Airbnb Complet
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  orchestrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 420  # 7 heures max pour tout le workflow
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+          python -m pip install pandas
+
+      - name: Install Node dependencies
+        run: npm install
+
+      - name: Vérifier search_urls.txt
+        run: |
+          if [ ! -f search_urls.txt ]; then
+            echo "❌ ERREUR: search_urls.txt est manquant!"
+            echo "Créez ce fichier avec vos URLs de pages de recherche Airbnb."
+            exit 1
+          fi
+          echo "✅ search_urls.txt trouvé"
+          echo "Nombre de pages à traiter: $(wc -l < search_urls.txt)"
+
+      - name: Créer les dossiers de sortie
+        run: |
+          mkdir -p output_phase1
+          mkdir -p output_phase2
+          mkdir -p output_final
+
+      - name: Orchestration complète (page par page)
+        run: |
+          echo "🚀 DÉBUT DE L'ORCHESTRATION"
+          echo "======================================"
+          
+          # Lire toutes les URLs
+          mapfile -t SEARCH_URLS < search_urls.txt
+          TOTAL_PAGES=${#SEARCH_URLS[@]}
+          
+          echo "📊 Nombre total de pages à traiter: $TOTAL_PAGES"
+          echo ""
+          
+          # Suivre les hôtes déjà scrapés (gestion des doublons)
+          touch hosts_already_scraped.txt
+          
+          PAGE_NUM=1
+          for SEARCH_URL in "${SEARCH_URLS[@]}"; do
+            # Nettoyer l'URL (enlever espaces, commentaires)
+            SEARCH_URL=$(echo "$SEARCH_URL" | sed 's/#.*//' | xargs)
+            
+            # Ignorer les lignes vides
+            if [ -z "$SEARCH_URL" ]; then
+              continue
+            fi
+            
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "📄 PAGE $PAGE_NUM/$TOTAL_PAGES"
+            echo "🔗 URL: $SEARCH_URL"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            
+            # ==========================================
+            # PHASE 1 : SCRAPER LES ANNONCES
+            # ==========================================
+            echo ""
+            echo "1️⃣ PHASE 1 : Scraping des annonces..."
+            
+            export START_URL="$SEARCH_URL"
+            export MAX_LISTINGS="20"
+            export MAX_MINUTES="15"
+            export PROXY=""
+            
+            # Exécuter le scraper Python
+            if python scrape_airbnb.py; then
+              echo "✅ Phase 1 réussie pour page $PAGE_NUM"
+              
+              # Sauvegarder le résultat
+              if [ -f airbnb_results.csv ]; then
+                cp airbnb_results.csv "output_phase1/page_${PAGE_NUM}_listings.csv"
+                
+                # Extraire les URLs des hôtes (sans doublons)
+                echo "📋 Extraction des URLs des hôtes..."
+                tail -n +2 airbnb_results.csv | cut -d',' -f6 | grep "^https://" > temp_hosts_page_${PAGE_NUM}.txt || true
+                
+                # Filtrer les hôtes déjà scrapés
+                if [ -s temp_hosts_page_${PAGE_NUM}.txt ]; then
+                  sort temp_hosts_page_${PAGE_NUM}.txt | uniq > temp_hosts_unique.txt
+                  comm -23 temp_hosts_unique.txt <(sort hosts_already_scraped.txt) > hosts_to_scrape_page_${PAGE_NUM}.txt
+                  
+                  HOST_COUNT=$(wc -l < hosts_to_scrape_page_${PAGE_NUM}.txt)
+                  echo "📊 Hôtes uniques à scraper: $HOST_COUNT"
+                  
+                  if [ "$HOST_COUNT" -gt 0 ]; then
+                    # ==========================================
+                    # PHASE 2 : SCRAPER LES PROFILS HÔTES
+                    # ==========================================
+                    echo ""
+                    echo "2️⃣ PHASE 2 : Scraping des profils hôtes ($HOST_COUNT hôtes)..."
+                    
+                    # Préparer urls.txt pour le scraper Node.js
+                    cp hosts_to_scrape_page_${PAGE_NUM}.txt urls.txt
+                    
+                    # Exécuter le scraper Node.js
+                    if npm start; then
+                      echo "✅ Phase 2 réussie pour page $PAGE_NUM"
+                      
+                      # Sauvegarder le résultat
+                      if [ -f output/results.csv ]; then
+                        cp output/results.csv "output_phase2/page_${PAGE_NUM}_hosts.csv"
+                        
+                        # Ajouter les hôtes scrapés à la liste
+                        cat hosts_to_scrape_page_${PAGE_NUM}.txt >> hosts_already_scraped.txt
+                        sort -u hosts_already_scraped.txt -o hosts_already_scraped.txt
+                      else
+                        echo "⚠️ Aucun résultat de Phase 2 pour page $PAGE_NUM"
+                      fi
+                    else
+                      echo "❌ ERREUR Phase 2 pour page $PAGE_NUM - CONTINUATION"
+                    fi
+                  else
+                    echo "ℹ️ Tous les hôtes de cette page ont déjà été scrapés"
+                  fi
+                else
+                  echo "⚠️ Aucune URL d'hôte extraite de la page $PAGE_NUM"
+                fi
+              else
+                echo "⚠️ Aucun résultat de Phase 1 pour page $PAGE_NUM"
+              fi
+            else
+              echo "❌ ERREUR Phase 1 pour page $PAGE_NUM - CONTINUATION"
+            fi
+            
+            echo ""
+            echo "✅ Page $PAGE_NUM/$TOTAL_PAGES terminée"
+            echo ""
+            
+            # Petit délai entre les pages pour éviter le rate limiting
+            if [ $PAGE_NUM -lt $TOTAL_PAGES ]; then
+              echo "⏳ Attente de 10 secondes avant la page suivante..."
+              sleep 10
+            fi
+            
+            PAGE_NUM=$((PAGE_NUM + 1))
+          done
+          
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🎉 ORCHESTRATION TERMINÉE"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      - name: Fusion des résultats
+        run: |
+          echo "🔗 FUSION DES RÉSULTATS..."
+          python merge_results.py
+
+      - name: Afficher le résumé
+        run: |
+          echo ""
+          echo "📊 RÉSUMÉ DES RÉSULTATS"
+          echo "======================================"
+          
+          if [ -d output_phase1 ]; then
+            PHASE1_COUNT=$(ls -1 output_phase1/*.csv 2>/dev/null | wc -l)
+            echo "Phase 1 (annonces): $PHASE1_COUNT fichiers"
+          fi
+          
+          if [ -d output_phase2 ]; then
+            PHASE2_COUNT=$(ls -1 output_phase2/*.csv 2>/dev/null | wc -l)
+            echo "Phase 2 (hôtes): $PHASE2_COUNT fichiers"
+          fi
+          
+          if [ -f output_final/final_complete_results.csv ]; then
+            TOTAL_ROWS=$(tail -n +2 output_final/final_complete_results.csv | wc -l)
+            echo "Résultat final: $TOTAL_ROWS lignes de données"
+            echo "✅ Fichier: output_final/final_complete_results.csv"
+          else
+            echo "⚠️ Aucun fichier final créé"
+          fi
+
+      - name: Upload résultats Phase 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase1-listings
+          path: output_phase1/*.csv
+          if-no-files-found: warn
+
+      - name: Upload résultats Phase 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase2-hosts
+          path: output_phase2/*.csv
+          if-no-files-found: warn
+
+      - name: Upload résultat final fusionné
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-complete-results
+          path: output_final/final_complete_results.csv
+          if-no-files-found: error
+
+      - name: Upload debug info
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: debug-info
+          path: |
+            hosts_already_scraped.txt
+            output/debug/**
+          if-no-files-found: ignore
