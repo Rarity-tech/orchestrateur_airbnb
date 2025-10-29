@@ -1,4 +1,4 @@
-# scrape_airbnb.py - VERSION CORRIGÉE PROFESSIONNELLE
+# scrape_airbnb.py - VERSION FINALE CORRIGÉE
 import os, csv, re, time, datetime
 from urllib.parse import urljoin
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
@@ -149,11 +149,12 @@ def extract_license_code(page):
             return m.group(0)
     return ""
 
-# ---------------- HOST (VERSION CORRIGÉE) ----------------
+# ---------------- HOST (VERSION FINALE CORRIGÉE) ----------------
 
 def find_host_section(page):
     """
     Liste étendue de sélecteurs pour trouver le bloc hôte
+    CORRIGÉ: Priorité au nouveau pattern /users/profile/
     """
     candidates = [
         # Français
@@ -170,7 +171,8 @@ def find_host_section(page):
         'section:has(h2:has-text("Conoce a tu anfitri"))',
         # Allemand
         'section:has(h2:has-text("Erfahre mehr über deinen Gastgeber"))',
-        # Sélecteurs génériques
+        # Sélecteurs génériques - NOUVEAU PATTERN /users/profile/ EN PRIORITÉ
+        'section:has(a[href*="/users/profile/"])',
         'section:has(a[href*="/users/show/"])',
         'div[data-section-id*="HOST"]',
         'div[data-plugin-in-point-id*="HOST"]',
@@ -190,10 +192,7 @@ def find_host_section(page):
 
 def extract_host_fields(page, listing_url):
     """
-    SOLUTION PROFESSIONNELLE: Extraction robuste des données hôte
-    - Supporte tous les formats d'URL (relatives et absolues)
-    - Multiples stratégies de fallback
-    - Debugging détaillé
+    SOLUTION FINALE: Extraction robuste avec le NOUVEAU pattern /users/profile/
     """
     host_name = host_overall_rating = host_profile_url = host_joined = ""
     
@@ -218,21 +217,20 @@ def extract_host_fields(page, listing_url):
         sect = find_host_section(page)
     
     # Étape 2: Extraction de l'URL du profil hôte
-    # STRATÉGIE 1: Chercher dans le bloc avec sélecteur flexible
+    # STRATÉGIE 1: Chercher dans le bloc avec le NOUVEAU pattern /users/profile/
     if sect:
         print("→ Recherche URL hôte dans le bloc section...")
         try:
-            # CORRECTION PRINCIPALE: Utiliser [href*=...] au lieu de [href^=...]
-            # Cela trouve les URLs qui CONTIENNENT /users/show/ n'importe où
-            all_links = sect.locator('a[href*="/users/show/"]').all()
+            # CORRECTION PRINCIPALE: Chercher /users/profile/ ET /users/show/
+            all_links = sect.locator('a[href*="/users/profile/"], a[href*="/users/show/"]').all()
             
             if all_links:
                 print(f"   Trouvé {len(all_links)} lien(s) candidat(s) dans le bloc")
                 for link in all_links:
                     try:
                         href = link.get_attribute("href")
-                        if href and "/users/show/" in href:
-                            # Construire l'URL complète
+                        if href and ("/users/profile/" in href or "/users/show/" in href):
+                            # Construire l'URL complète (enlever les query params)
                             host_profile_url = urljoin(listing_url, href.split("?")[0])
                             print(f"✓ URL hôte trouvée (bloc): {host_profile_url}")
                             
@@ -249,7 +247,7 @@ def extract_host_fields(page, listing_url):
                         print(f"⚠ Erreur traitement lien: {e}")
                         continue
             else:
-                print("⚠ Aucun lien /users/show/ trouvé dans le bloc section")
+                print("⚠ Aucun lien /users/profile/ ou /users/show/ trouvé dans le bloc section")
         except Exception as e:
             print(f"⚠ Erreur recherche dans bloc: {e}")
     
@@ -257,8 +255,8 @@ def extract_host_fields(page, listing_url):
     if not host_profile_url:
         print("→ Fallback: Recherche dans toute la page...")
         try:
-            # Chercher TOUS les liens contenant /users/show/
-            all_page_links = page.locator('a[href*="/users/show/"]').all()
+            # Chercher TOUS les liens contenant /users/profile/ OU /users/show/
+            all_page_links = page.locator('a[href*="/users/profile/"], a[href*="/users/show/"]').all()
             
             if all_page_links:
                 print(f"   Trouvé {len(all_page_links)} lien(s) candidat(s) dans la page")
@@ -267,7 +265,7 @@ def extract_host_fields(page, listing_url):
                 for link in all_page_links:
                     try:
                         href = link.get_attribute("href")
-                        if href and "/users/show/" in href:
+                        if href and ("/users/profile/" in href or "/users/show/" in href):
                             host_profile_url = urljoin(listing_url, href.split("?")[0])
                             print(f"✓ URL hôte trouvée (fallback page): {host_profile_url}")
                             
@@ -283,7 +281,7 @@ def extract_host_fields(page, listing_url):
                     except:
                         continue
             else:
-                print("⚠ Aucun lien /users/show/ dans toute la page")
+                print("⚠ Aucun lien /users/profile/ ou /users/show/ dans toute la page")
         except Exception as e:
             print(f"⚠ Erreur fallback page: {e}")
     
@@ -293,10 +291,12 @@ def extract_host_fields(page, listing_url):
         try:
             html = page.content()
             
-            # Regex pour trouver les URLs /users/show/ dans le HTML
+            # Regex pour trouver les URLs /users/profile/ OU /users/show/ dans le HTML
             patterns = [
-                r'href="(https?://[^"]*?/users/show/[^"?]+)',  # URL complète
-                r'href="(/users/show/[^"?]+)',                  # URL relative
+                r'href="(https?://[^"]*?/users/profile/[^"?]+)',  # URL complète /profile/
+                r'href="(/users/profile/[^"?]+)',                  # URL relative /profile/
+                r'href="(https?://[^"]*?/users/show/[^"?]+)',     # URL complète /show/
+                r'href="(/users/show/[^"?]+)',                     # URL relative /show/
             ]
             
             for pattern in patterns:
