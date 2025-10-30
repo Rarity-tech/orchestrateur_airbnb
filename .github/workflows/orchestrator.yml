@@ -96,9 +96,22 @@ jobs:
               if [ -f airbnb_results.csv ]; then
                 cp airbnb_results.csv "output_phase1/page_${PAGE_NUM}_listings.csv"
                 
-                # Extraire les URLs des hôtes (CORRECTION: enlever les guillemets)
+                # Extraire les URLs des hôtes (CORRECTION: utiliser Python pour parser CSV correctement)
                 echo "📋 Extraction des URLs des hôtes..."
-                tail -n +2 airbnb_results.csv | cut -d',' -f6 | sed 's/"//g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep "^https://" > temp_hosts_page_${PAGE_NUM}.txt || true
+                python3 << 'EXTRACT_URLS' > temp_hosts_page_${PAGE_NUM}.txt
+import csv
+import sys
+
+try:
+    with open('airbnb_results.csv', 'r', encoding='utf-8-sig') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            url = row.get('host_profile_url', '').strip()
+            if url and url.startswith('https://'):
+                print(url)
+except Exception as e:
+    print(f"Erreur extraction: {e}", file=sys.stderr)
+EXTRACT_URLS
                 
                 # Debug: afficher le nombre d'URLs trouvées
                 URL_COUNT=$(wc -l < temp_hosts_page_${PAGE_NUM}.txt 2>/dev/null || echo 0)
