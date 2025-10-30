@@ -96,9 +96,9 @@ jobs:
               if [ -f airbnb_results.csv ]; then
                 cp airbnb_results.csv "output_phase1/page_${PAGE_NUM}_listings.csv"
                 
-                # Extraire les URLs des hôtes avec Python (gère correctement les CSV)
+                # Extraire les URLs des hôtes avec Python (gère correctement les CSV et nettoie les query parameters)
                 echo "📋 Extraction des URLs des hôtes..."
-                python3 -c "import csv; [print(row['host_profile_url']) for row in csv.DictReader(open('airbnb_results.csv', encoding='utf-8-sig')) if row.get('host_profile_url', '').strip().startswith('https://')]" > temp_hosts_page_${PAGE_NUM}.txt 2>/dev/null || true
+                python3 -c "import csv; [print(row['host_profile_url'].split('?')[0]) for row in csv.DictReader(open('airbnb_results.csv', encoding='utf-8-sig')) if row.get('host_profile_url', '').strip().startswith('https://')]" > temp_hosts_page_${PAGE_NUM}.txt 2>/dev/null || true
                 
                 # Debug: afficher le nombre d'URLs trouvées
                 URL_COUNT=$(wc -l < temp_hosts_page_${PAGE_NUM}.txt 2>/dev/null || echo 0)
