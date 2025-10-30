@@ -91,7 +91,6 @@ function extractListingCount(text, html) {
 }
 
 function extractRating({ fullText, scriptsJson, fullHTML }) {
-  // CORRECTION: D'abord chercher dans le JSON structuré
   try {
     for (const json of scriptsJson) {
       const obj = JSON.parse(json);
@@ -100,25 +99,19 @@ function extractRating({ fullText, scriptsJson, fullHTML }) {
         const v = it?.aggregateRating?.ratingValue;
         if (v != null) {
           const val = parseFloat(String(v).replace(",", "."));
-          // CORRECTION: Valider que le rating est entre 1 et 5
           if (!Number.isNaN(val) && val >= 1 && val <= 5) return val;
         }
       }
     }
   } catch {}
   
-  // CORRECTION: Patterns plus précis pour le rating
   const pool = fullText + "\n" + fullHTML;
   const cands = [
-    // Pattern français avec "évaluations"
     /([0-9]+[.,][0-9]+)\s+évaluations?/i,
-    // Pattern avec étoiles AVANT le nombre
     /★\s*([0-9]+[.,][0-9]+)/i,
     /⭐\s*([0-9]+[.,][0-9]+)/i,
-    // Note globale
     /Note\s+globale\s*:?\s*([0-9]+[.,][0-9]+)/i,
     /Moyenne\s*:?\s*([0-9]+[.,][0-9]+)/i,
-    // Pattern anglais
     /([0-9]+[.,][0-9]+)\s+rating/i,
     /([0-9]+[.,][0-9]+)\s+reviews?/i,
   ];
@@ -127,7 +120,6 @@ function extractRating({ fullText, scriptsJson, fullHTML }) {
     const m = pool.match(re);
     if (m) {
       const val = parseFloat(m[1].replace(",", "."));
-      // CORRECTION CRITIQUE: Valider que c'est un rating valide (entre 1 et 5)
       if (!Number.isNaN(val) && val >= 1 && val <= 5) return val;
     }
   }
@@ -241,14 +233,36 @@ async function scrapeOne(page, url, debugDir, idx) {
     });
 
     await gotoRobust(page, url);
+    
+    // CORRECTION CRITIQUE : Attendre que la vraie page soit chargée
+    // Airbnb fait une redirection en 2 temps, il faut attendre la vraie page
+    
+    // 1. Attendre que body soit présent
     await page.waitForSelector("body", { timeout: 15000 });
+    
+    // 2. ATTENDRE 3 SECONDES pour laisser la redirection se faire
+    console.log(`  ⏳ Attente de la vraie page (3s)...`);
+    await delay(3000);
+    
+    // 3. Attendre qu'un élément spécifique du profil soit chargé (h1 ou section de profil)
+    try {
+      await page.waitForSelector('h1, [data-testid*="profile"], section', { timeout: 5000 });
+    } catch {
+      // Si ça ne marche pas, continuer quand même
+    }
+    
+    // 4. Attendre encore 2 secondes pour être sûr
+    await delay(2000);
 
-    await page.evaluate(() => { window.scrollTo(0, document.body.scrollHeight * 0.5); });
-    await delay(700);
-    await page.evaluate(() => { window.scrollTo(0, document.body.scrollHeight); });
+    // 5. Faire des scrolls pour charger le contenu dynamique
+    await page.evaluate(() => { window.scrollTo(0, document.body.scrollHeight * 0.3); });
     await delay(1000);
+    await page.evaluate(() => { window.scrollTo(0, document.body.scrollHeight * 0.6); });
+    await delay(1000);
+    await page.evaluate(() => { window.scrollTo(0, document.body.scrollHeight); });
+    await delay(1500);
     await page.evaluate(() => { window.scrollTo(0, 0); });
-    await delay(400);
+    await delay(1000);
 
     const data = await page.evaluate(() => {
       const q = (sel) => document.querySelector(sel);
@@ -342,7 +356,7 @@ async function main() {
     if (/Navigation timeout/i.test(r.notes)) { await delay(1200); r = await scrapeOne(page, urls[i], debugDir, i); }
     results.push(r);
     console.log(`[${i+1}/${urls.length}] ${urls[i]} => ${r.name || "?"} | rating ${r.rating ?? "?"} | listings ${r.listing_count ?? "?"} | joined ${r.joined_year ?? "?"} | years ${r.years_active ?? "?"}`);
-    await delay(600);
+    await delay(1000);
   }
 
   const csv = Papa.unparse(results, { columns: ["url","name","rating","joined_year","years_active","listing_count","notes"] });
