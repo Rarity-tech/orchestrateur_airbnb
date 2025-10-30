@@ -97,8 +97,25 @@ jobs:
                 cp airbnb_results.csv "output_phase1/page_${PAGE_NUM}_listings.csv"
                 
                 # Extraire les URLs des hôtes (sans doublons)
+                # CORRECTION: Utiliser Python pour parser le CSV correctement
                 echo "📋 Extraction des URLs des hôtes..."
-                tail -n +2 airbnb_results.csv | cut -d',' -f6 | grep "^https://" > temp_hosts_page_${PAGE_NUM}.txt || true
+                python3 << 'EOFDOC' > temp_hosts_page_${PAGE_NUM}.txt
+import csv
+import sys
+
+try:
+    with open('airbnb_results.csv', 'r', encoding='utf-8-sig', newline='') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            url = row.get('host_profile_url', '').strip()
+            # Enlever les guillemets si présents
+            url = url.strip('"').strip()
+            if url and url.startswith('https://'):
+                print(url)
+except Exception as e:
+    print(f"ERREUR: {e}", file=sys.stderr)
+    sys.exit(0)
+EOFDOC
                 
                 # Filtrer les hôtes déjà scrapés
                 if [ -s temp_hosts_page_${PAGE_NUM}.txt ]; then
@@ -117,6 +134,10 @@ jobs:
                     
                     # Préparer urls.txt pour le scraper Node.js
                     cp hosts_to_scrape_page_${PAGE_NUM}.txt urls.txt
+                    
+                    # Afficher les premières URLs pour debug
+                    echo "📝 Premières URLs à scraper:"
+                    head -3 urls.txt || true
                     
                     # Exécuter le scraper Node.js
                     if npm start; then
@@ -222,5 +243,7 @@ jobs:
           name: debug-info
           path: |
             hosts_already_scraped.txt
+            temp_hosts_page_*.txt
+            hosts_to_scrape_page_*.txt
             output/debug/**
           if-no-files-found: ignore
