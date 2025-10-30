@@ -16,21 +16,16 @@ const delay = (ms) => new Promise(r => setTimeout(r, ms));
 function readUrls() {
   if (!fs.existsSync(INPUT_FILE)) throw new Error(`Fichier urls.txt introuvable: ${INPUT_FILE}`);
 
-  // 1) lire toutes les lignes
   let lines = fs.readFileSync(INPUT_FILE, "utf8")
     .split(/\r?\n/)
     .map(s => s.trim())
     .filter(s => s && !s.startsWith("#"));
 
-  // 2) si l’utilisateur a collé un CSV/TSV, ne prendre que la 1re colonne
   lines = lines.map(s => s.split(/[,;\t]/)[0].trim());
-
-  // 3) garder TOUTES les lignes (pas de déduplication)
-  //    optionnel: ne garder que les URLs valides
   const urls = lines.filter(s => /^https?:\/\//i.test(s));
 
   if (!urls.length) throw new Error("Aucune URL valide dans urls.txt");
-  console.log(`Detecté ${urls.length} URL(s) dans urls.txt`);
+  console.log(`Détecté ${urls.length} URL(s) dans urls.txt`);
   return urls;
 }
 
@@ -41,7 +36,6 @@ function ensureOutDir() {
   return dbg;
 }
 
-/* ---------------- parsing helpers ---------------- */
 function yearFromAny(val) {
   if (val == null) return null;
   if (typeof val === "number") {
@@ -58,6 +52,7 @@ function yearFromAny(val) {
   }
   return null;
 }
+
 function extractJoinedYearFromTextOrHtml(text, html) {
   const pats = [
     /Membre\s+depuis\s+(?:[A-Za-zÀ-ÖØ-öø-ÿ]+\s+)?(\d{4})/i,
@@ -65,25 +60,28 @@ function extractJoinedYearFromTextOrHtml(text, html) {
     /Inscrit[ e]*\s+(?:en|depuis)\s+(?:[A-Za-zÀ-ÖØ-öø-ÿ]+\s+)?(\d{4})/i,
     /Joined\s+in\s+(?:[A-Za-z]+\s+)?(\d{4})/i,
     /Member\s+since\s+(?:[A-Za-z]+\s+)?(\d{4})/i,
-    /On\s+Airbnb\s+since\s+(?:[A-Za-z]+\s+)?(\d{4})/i
+    /On\s+Airbnb\s+since\s+(?:[A-Za-z]+\s+)?(\d{4})/i,
+    /Sur\s+Airbnb\s+depuis\s+(?:[A-Za-z]+\s+)?(\d{4})/i
   ];
   for (const re of pats) {
-    let m = text.match(re); if (!m) m = html.match(re);
+    let m = text.match(re);
+    if (!m) m = html.match(re);
     if (m) {
       const y = parseInt(m[1], 10);
       if (y >= 2007 && y <= NOW_YEAR) return y;
     }
   }
-  const around = (text + "\n" + html).match(/(?:membre|since|joined|inscrit)[^0-9]{0,20}((?:19|20)\d{2})/i);
+  const around = (text + "\n" + html).match(/(?:membre|since|joined|inscrit|depuis)[^0-9]{0,20}((?:19|20)\d{2})/i);
   if (around) {
     const y = parseInt(around[1], 10);
     if (y >= 2007 && y <= NOW_YEAR) return y;
   }
   return null;
 }
+
 function extractListingCount(text, html) {
   const all = [];
-  for (const re of [/(\d{1,4})\s+(annonces|hébergements)/ig, /(\d{1,4})\s+listings?/ig]) {
+  for (const re of [/(\d{1,4})\s+(annonces|hébergements|logements)/ig, /(\d{1,4})\s+listings?/ig]) {
     for (const m of (text.matchAll(re))) all.push(parseInt(m[1], 10));
     for (const m of (html.matchAll(re))) all.push(parseInt(m[1], 10));
   }
@@ -91,7 +89,9 @@ function extractListingCount(text, html) {
   if (!filtered.length) return null;
   return Math.max(...filtered);
 }
+
 function extractRating({ fullText, scriptsJson, fullHTML }) {
+  // CORRECTION: D'abord chercher dans le JSON structuré
   try {
     for (const json of scriptsJson) {
       const obj = JSON.parse(json);
@@ -100,27 +100,40 @@ function extractRating({ fullText, scriptsJson, fullHTML }) {
         const v = it?.aggregateRating?.ratingValue;
         if (v != null) {
           const val = parseFloat(String(v).replace(",", "."));
-          if (!Number.isNaN(val)) return val;
+          // CORRECTION: Valider que le rating est entre 1 et 5
+          if (!Number.isNaN(val) && val >= 1 && val <= 5) return val;
         }
       }
     }
   } catch {}
+  
+  // CORRECTION: Patterns plus précis pour le rating
   const pool = fullText + "\n" + fullHTML;
   const cands = [
-    /Note\s+globale\s+([0-9]+[.,][0-9]+)/i,
-    /Moyenne\s+de\s+([0-9]+[.,][0-9]+)/i,
-    /([0-9]+[.,][0-9]+)\s*(?:évaluations|reviews|rating)/i,
-    /([0-9]+[.,][0-9]+)\s*[★\*]/i
+    // Pattern français avec "évaluations"
+    /([0-9]+[.,][0-9]+)\s+évaluations?/i,
+    // Pattern avec étoiles AVANT le nombre
+    /★\s*([0-9]+[.,][0-9]+)/i,
+    /⭐\s*([0-9]+[.,][0-9]+)/i,
+    // Note globale
+    /Note\s+globale\s*:?\s*([0-9]+[.,][0-9]+)/i,
+    /Moyenne\s*:?\s*([0-9]+[.,][0-9]+)/i,
+    // Pattern anglais
+    /([0-9]+[.,][0-9]+)\s+rating/i,
+    /([0-9]+[.,][0-9]+)\s+reviews?/i,
   ];
+  
   for (const re of cands) {
     const m = pool.match(re);
     if (m) {
       const val = parseFloat(m[1].replace(",", "."));
-      if (!Number.isNaN(val)) return val;
+      // CORRECTION CRITIQUE: Valider que c'est un rating valide (entre 1 et 5)
+      if (!Number.isNaN(val) && val >= 1 && val <= 5) return val;
     }
   }
   return null;
 }
+
 function cleanGeneric(s) {
   if (!s) return null;
   s = s.trim();
@@ -134,6 +147,7 @@ function cleanGeneric(s) {
   if (s.length > 80) s = s.slice(0, 80).trim();
   return s || null;
 }
+
 function deepFindName(obj, depth = 0) {
   if (!obj || typeof obj !== "object" || depth > 8) return null;
   const keys = ["fullName","displayName","hostName","publicName","smartName","name","userName","firstName"];
@@ -152,6 +166,7 @@ function deepFindName(obj, depth = 0) {
   }
   return null;
 }
+
 function pickName({ h1Text, fullText, metaTitle, metaDesc, nextData, fullHTML }) {
   try {
     if (nextData) {
@@ -160,11 +175,8 @@ function pickName({ h1Text, fullText, metaTitle, metaDesc, nextData, fullHTML })
       if (n) return n;
     }
   } catch {}
-  const candidates = [
-    h1Text,
-    metaTitle,
-    metaDesc
-  ].filter(Boolean);
+  
+  const candidates = [h1Text, metaTitle, metaDesc].filter(Boolean);
 
   const fromHtml = (() => {
     const m1 = fullHTML.match(/Quelques informations sur\s*([^<|–—\-]+)/i);
@@ -179,7 +191,6 @@ function pickName({ h1Text, fullText, metaTitle, metaDesc, nextData, fullHTML })
 
   for (const raw of candidates) {
     const s = String(raw);
-    // formes "Quelques informations sur X | Airbnb", "Profil de X – Airbnb"
     const p = [
       /Quelques informations sur\s+([^|–—\-•\n]+)/i,
       /Profil de\s+([^|–—\-•\n]+)/i,
@@ -195,7 +206,7 @@ function pickName({ h1Text, fullText, metaTitle, metaDesc, nextData, fullHTML })
     const c = cleanGeneric(s);
     if (c) return c;
   }
-  // ultime secours: texte brut
+  
   const t = fullText.match(/(?:Quelques informations sur|Profil de)\s+([^\n|]+)/i);
   if (t) {
     const c = cleanGeneric(t[1]);
@@ -204,7 +215,6 @@ function pickName({ h1Text, fullText, metaTitle, metaDesc, nextData, fullHTML })
   return null;
 }
 
-/* ---------------- navigation + scrape ---------------- */
 async function gotoRobust(page, url) {
   const timeoutMs = 120000;
   try {
@@ -259,7 +269,7 @@ async function scrapeOne(page, url, debugDir, idx) {
         .map(s => s.textContent || "");
 
       let nextData = null;
-      try { // @ts-ignore
+      try {
         const el = document.querySelector("#__NEXT_DATA__");
         nextData = el ? el.textContent : (window.__NEXT_DATA__ ? JSON.stringify(window.__NEXT_DATA__) : null);
       } catch {}
@@ -274,12 +284,10 @@ async function scrapeOne(page, url, debugDir, idx) {
     out.rating = extractRating(data);
     out.listing_count = extractListingCount(data.fullText, data.fullHTML);
 
-    // year from NEXT keys anywhere
     let year = null;
     try {
       if (data.nextData) {
         const nd = JSON.parse(data.nextData);
-        // BFS over all values to find obvious join keys or any date-like string
         const queue = [nd];
         while (queue.length && !year) {
           const cur = queue.shift();
